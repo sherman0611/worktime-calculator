@@ -1,14 +1,14 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 import os
 
 # Change file name
-input_file = 'Register_Timekeeping_Report_2024-10-30_00_00GMT_to_2024-11-26_23_59GMT.xlsx'
-output_file = 'employee_work_hours.xlsx'
+month_year = "Oct_2024"
+input_file = 'Register_Timekeeping_Report_2024-09-26_00_00GMT_to_2024-10-29_23_59GMT.xlsx'
 
 def format_excel_file(file_path):
     wb = load_workbook(file_path)
@@ -59,57 +59,60 @@ def format_excel_file(file_path):
     
     wb.save(file_path)
 
-def calculate_work_hours(input_file, output_file):
+def calculate_work_hours(input_file):
     df = pd.read_excel(input_file, header=None)
     
-    # Select required columns for calculation
+    # Select necessary columns
     columns_to_select = [0, 1, 5, 6]
     df = df.iloc[:, columns_to_select]
-    
-    # Add column names
     df.columns = ['Date', 'Time', 'Employee', 'Event']
     
-    # Strip (UTC) string from time
-    df['Time'] = df['Time'].str.replace(r"\(UTC\)", "", regex=True).str.strip()
+    # Strip unwanted substring from time
+    df['Time'] = df['Time'].str[:8]
     
     # Combine 'Date' and 'Time' columns to create a datetime column
-    df['Datetime'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Time'], errors='coerce')
+    df['Datetime'] = pd.to_datetime(
+        df['Date'].astype(str) + ' ' + df['Time'], 
+        format='%Y-%m-%d %H:%M:%S', 
+        errors='coerce'
+    )
     
     # Filter out invalid rows
     df = df[df['Datetime'].notna()]
     
-    # Calculate work hours
-    work_hours = []
-
-    for i in range(1, len(df)):
-        if df.iloc[i-1]['Event'] == 'Clock In' and df.iloc[i]['Event'] == 'Clock Out':
-            # Calculate time difference
-            work_time = df.iloc[i]['Datetime'] - df.iloc[i-1]['Datetime']
-            # Convert timedelta to hr:min format
-            hours, remainder = divmod(work_time.total_seconds(), 3600)
-            minutes = remainder // 60
-            work_hours.append(f"{int(hours):02}:{int(minutes):02}")
-        else:
-            work_hours.append(None)
-
-    # Add the work hours to the DataFrame
-    df['Work Hours'] = [None] + work_hours
-
-    df = df.drop(columns=['Datetime'])
-
-    # Group by Employee and calculate total hours
+    # Group by Employee
     employee_groups = df.groupby('Employee')
     
-    current_month_year = datetime.now().strftime("%b_%Y")
-    
     # Create a folder for the month and year
-    folder_name = current_month_year
+    folder_name = month_year
     os.makedirs(folder_name, exist_ok=True)
     
-    # Save individual files and combine all tables
-    combined_df = pd.DataFrame()  # To store all employee data
+    # Prepare a combined DataFrame for all employees
+    combined_df = pd.DataFrame()
     
     for employee, group in employee_groups:
+        # Sort group by Datetime
+        group = group.sort_values(by='Datetime').reset_index(drop=True)
+        
+        # Initialize the 'Work Hours' column
+        group['Work Hours'] = None
+        
+        # Calculate work hours within each employee group
+        work_hours = []
+        for i in range(1, len(group)):
+            if group.iloc[i-1]['Event'] == 'Clock In' and group.iloc[i]['Event'] == 'Clock Out':
+                # Calculate time difference
+                work_time = group.iloc[i]['Datetime'] - group.iloc[i-1]['Datetime']
+                # Convert timedelta to hr:min format
+                hours, remainder = divmod(work_time.total_seconds(), 3600)
+                minutes = remainder // 60
+                work_hours.append(f"{int(hours):02}:{int(minutes):02}")
+            else:
+                work_hours.append(None)
+        
+        # Add calculated work hours to the group
+        group['Work Hours'] = [None] + work_hours  # Ensure alignment with rows
+        
         # Calculate total hours for the employee as timedelta objects
         total_seconds = group['Work Hours'].dropna().apply(
             lambda x: int(x.split(':')[0]) * 3600 + int(x.split(':')[1]) * 60
@@ -126,20 +129,22 @@ def calculate_work_hours(input_file, output_file):
         
         # Concatenate the group with its total hours row
         employee_df = pd.concat([group, total_hours_row])
+
+        # Save individual employee file
+        employee_df = employee_df.drop(columns=['Datetime'], errors='ignore') 
+        employee_file = os.path.join(folder_name, f"{employee.replace(' ', '_')}_{month_year}.xlsx")
+        employee_df.to_excel(employee_file, index=False)
+        format_excel_file(employee_file)
         
         # Add employee data to the combined DataFrame
         combined_df = pd.concat([combined_df, employee_df, pd.DataFrame([[''] * len(group.columns)], columns=group.columns)])
-        
-        employee_file = os.path.join(folder_name, f"{employee.replace(' ', '_')}_{current_month_year}.xlsx")
-        employee_df.to_excel(employee_file, index=False)
-        
-        format_excel_file(employee_file)
     
-    combined_file = os.path.join(folder_name, f"All_{current_month_year}.xlsx")
+    # save combined file
+    combined_df = combined_df.drop(columns=['Datetime'], errors='ignore')
+    combined_file = os.path.join(folder_name, f"All_{month_year}.xlsx")
     combined_df.to_excel(combined_file, index=False)
-    
     format_excel_file(combined_file)
     
     print(f"All files have been saved in the folder: {folder_name}")
 
-calculate_work_hours(input_file, output_file)
+calculate_work_hours(input_file)
